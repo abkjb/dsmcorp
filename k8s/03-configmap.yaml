@@ -1,0 +1,238 @@
+---
+# PostgreSQL Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-config
+  namespace: signature
+data:
+  postgresql.conf: |
+    # Connection settings
+    max_connections = 200
+    superuser_reserved_connections = 5
+    
+    # Memory settings (adjust based on your node capacity)
+    shared_buffers = 4GB
+    effective_cache_size = 12GB
+    maintenance_work_mem = 1GB
+    work_mem = 10MB
+    
+    # WAL settings
+    wal_buffers = 16MB
+    min_wal_size = 1GB
+    max_wal_size = 4GB
+    
+    # Checkpoint settings
+    checkpoint_completion_target = 0.9
+    
+    # Query planning
+    default_statistics_target = 100
+    random_page_cost = 1.1
+    effective_io_concurrency = 200
+    
+    # Logging
+    log_min_duration_statement = 1000
+    log_statement = 'all'
+    log_connections = on
+    log_disconnections = on
+    log_duration = on
+    
+    # Replication
+    wal_level = replica
+    max_wal_senders = 10
+    max_replication_slots = 10
+    wal_keep_size = 1GB
+
+---
+# eSup-Signature Application Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: esup-signature-config
+  namespace: signature
+data:
+  application.properties: |
+    # Spring Configuration
+    spring.application.name=esup-signature
+    spring.profiles.active=production
+    
+    # Server Configuration
+    server.port=8080
+    server.servlet.context-path=/
+    server.compression.enabled=true
+    server.compression.min-response-size=1024
+    server.compression.excluded-mime-types=image/png,image/jpeg,image/gif,application/pdf
+    
+    # Database Connection Pool (HikariCP)
+    spring.datasource.hikari.maximum-pool-size=20
+    spring.datasource.hikari.minimum-idle=5
+    spring.datasource.hikari.connection-timeout=30000
+    spring.datasource.hikari.idle-timeout=600000
+    spring.datasource.hikari.max-lifetime=1800000
+    spring.datasource.hikari.auto-commit=true
+    spring.datasource.hikari.leak-detection-threshold=60000
+    
+    # JPA/Hibernate Configuration
+    spring.jpa.hibernate.ddl-auto=validate
+    spring.jpa.show-sql=false
+    spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQL13Dialect
+    spring.jpa.properties.hibernate.format_sql=false
+    spring.jpa.properties.hibernate.jdbc.batch_size=20
+    spring.jpa.properties.hibernate.order_inserts=true
+    spring.jpa.properties.hibernate.order_updates=true
+    spring.jpa.properties.hibernate.jdbc.fetch_size=50
+    spring.jpa.properties.hibernate.jdbc.batch_versioned_data=true
+    spring.jpa.properties.hibernate.cache.use_second_level_cache=true
+    spring.jpa.properties.hibernate.cache.region.factory_class=org.hibernate.cache.jcache.JCacheRegionFactory
+    
+    # Jackson Configuration
+    spring.jackson.default-property-inclusion=non_null
+    spring.jackson.serialization.write-dates-as-timestamps=false
+    spring.jackson.time-zone=UTC
+    
+    # Logging Configuration
+    logging.level.root=INFO
+    logging.level.org.esup.signature=DEBUG
+    logging.level.org.springframework.web=WARN
+    logging.level.org.springframework.security=WARN
+    logging.level.org.hibernate.SQL=DEBUG
+    logging.pattern.console=%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n
+    # JWT Configuration
+    app.jwt.header=Authorization
+    app.jwt.prefix=Bearer 
+    app.jwt.expiration=3600
+    app.jwt.secret=${JWT_SECRET}
+    
+    # File Upload Configuration
+    app.upload.max-file-size=52428800
+    app.upload.max-request-size=52428800
+    app.upload.temp-dir=/tmp/esup-signature
+    
+    # Session Configuration
+    spring.session.store-type=redis
+    spring.session.redis.namespace=esup:session
+    spring.session.timeout=1h
+    spring.redis.host=redis
+    spring.redis.port=6379
+    spring.redis.password=${REDIS_PASSWORD}
+    spring.redis.database=0
+    spring.redis.timeout=2000ms
+    spring.redis.jedis.pool.max-active=8
+    spring.redis.jedis.pool.max-idle=8
+    spring.redis.jedis.pool.min-idle=0
+    
+    # Actuator Configuration
+    management.endpoints.web.exposure.include=health,metrics,prometheus,info,loggers
+    management.endpoint.health.show-details=always
+    management.metrics.enable.jvm=true
+    management.metrics.enable.process=true
+    management.metrics.enable.logback=true
+
+---
+# Fluentd Configuration for Logging
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluentd-config
+  namespace: signature
+data:
+  fluent.conf: |
+    <source>
+      @type tail
+      path /var/log/containers/*esup-signature*.log
+      pos_file /var/log/esup-signature.log.pos
+      tag kubernetes.*
+      read_from_head true
+      <parse>
+        @type json
+        time_format %Y-%m-%dT%H:%M:%S.%NZ
+      </parse>
+    </source>
+
+    <filter kubernetes.**>
+      @type kubernetes_metadata
+      kubernetes_url "#{ENV['FLUENT_FILTER_KUBERNETES_URL']}"
+      kubernetes_verify_ssl "#{ENV['KUBERNETES_VERIFY_SSL'] || true}"
+    </filter>
+
+    <match **>
+      @type elasticsearch
+      @id output_elasticsearch
+      @log_level info
+      host elasticsearch.signature.svc.cluster.local
+      port 9200
+      path /
+      logstash_format true
+      logstash_prefix esup-signature
+      logstash_dateformat %Y.%m.%d
+      include_tag_key true
+      tag_key @log_source
+      <buffer>
+        @type file
+        path /var/log/fluentd-buffers/kubernetes.system.buffer
+        flush_mode interval
+        retry_type exponential_backoff
+        flush_interval 5s
+        retry_forever false
+        retry_max_interval 30
+        retry_max_times 17
+        chunk_limit_size 2M
+        queue_limit_length 8
+        overflow_action block
+      </buffer>
+    </match>
+
+---
+# Prometheus Scrape Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: signature
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+      external_labels:
+        cluster: 'esup-signature'
+        environment: 'production'
+    
+    scrape_configs:
+    - job_name: 'kubernetes-pods'
+      kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names:
+          - signature
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: true
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+        action: replace
+        target_label: __metrics_path__
+        regex: (.+)
+      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        target_label: __address__
+      - action: labelmap
+        regex: __meta_kubernetes_pod_label_(.+)
+    
+    - job_name: 'esup-signature'
+      static_configs:
+      - targets: ['esup-signature:8080']
+      metrics_path: '/actuator/prometheus'
+      scrape_interval: 30s
+    
+    - job_name: 'postgresql'
+      static_configs:
+      - targets: ['postgresql:9187']
+      scrape_interval: 30s
+    
+    - job_name: 'redis'
+      static_configs:
+      - targets: ['redis:6379']
+      scrape_interval: 30s

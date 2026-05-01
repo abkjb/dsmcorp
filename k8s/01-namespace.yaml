@@ -1,0 +1,207 @@
+---
+# Namespace for eSup-Signature
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: signature
+  labels:
+    name: signature
+    environment: production
+    monitoring: enabled
+
+---
+# Resource Quota to prevent resource exhaustion
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: signature-quota
+  namespace: signature
+spec:
+  hard:
+    requests.cpu: "32"
+    requests.memory: "64Gi"
+    limits.cpu: "64"
+    limits.memory: "128Gi"
+    pods: "100"
+    services: "20"
+    persistentvolumeclaims: "10"
+    configmaps: "50"
+    secrets: "50"
+  scopeSelector:
+    matchExpressions:
+    - operator: In
+      scopeName: PriorityClass
+      values: ["high"]
+
+---
+# Network Policy: Default Deny All Ingress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: signature
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+
+---
+# Network Policy: Allow from Ingress Controller
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-from-ingress
+  namespace: signature
+spec:
+  podSelector:
+    matchLabels:
+      app: esup-signature
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+    ports:
+    - protocol: TCP
+      port: 8080
+
+---
+# Network Policy: Allow eSup to PostgreSQL
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-esup-to-postgres
+  namespace: signature
+spec:
+  podSelector:
+    matchLabels:
+      app: postgresql
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: esup-signature
+    ports:
+    - protocol: TCP
+      port: 5432
+
+---
+# Network Policy: Allow eSup to Redis
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-esup-to-redis
+  namespace: signature
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: esup-signature
+    ports:
+    - protocol: TCP
+      port: 6379
+
+---
+# Network Policy: Allow DNS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: signature
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+
+---
+# RBAC: ServiceAccount for eSup-Signature
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: esup-signature
+  namespace: signature
+
+---
+# RBAC: Role for eSup-Signature
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: esup-signature-role
+  namespace: signature
+rules:
+- apiGroups: [""]
+  resources: ["configmaps", "secrets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get", "list"]
+
+---
+# RBAC: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: esup-signature-rolebinding
+  namespace: signature
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: esup-signature-role
+subjects:
+- kind: ServiceAccount
+  name: esup-signature
+  namespace: signature
+
+---
+# Pod Security Policy (restricted mode)
+apiVersion: policy/v1beta1
+kind: PodSecurityPolicy
+metadata:
+  name: restricted-psp
+spec:
+  privileged: false
+  allowPrivilegeEscalation: false
+  requiredDropCapabilities:
+  - ALL
+  volumes:
+  - 'configMap'
+  - 'emptyDir'
+  - 'projected'
+  - 'secret'
+  - 'downwardAPI'
+  - 'persistentVolumeClaim'
+  hostNetwork: false
+  hostIPC: false
+  hostPID: false
+  runAsUser:
+    rule: 'MustRunAsNonRoot'
+  seLinux:
+    rule: 'MustRunAs'
+    seLinuxOptions:
+      level: "s0:c123,c456"
+  supplementalGroups:
+    rule: 'RunAsAny'
+  fsGroup:
+    rule: 'MustRunAs'
+  readOnlyRootFilesystem: false
